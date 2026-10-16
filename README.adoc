@@ -1,0 +1,164 @@
+= crystal-before-upgrade
+:toc:
+:toc-title: Sommaire
+
+Essayer une nouvelle version de Crystal sur tous les projets du poste,
+*sans* changer la version utilisée au quotidien.
+
+== Pourquoi
+
+Le poste doit compiler avec la *même* version de Crystal que la production.
+Les paquets FreeBSD sont construits par poudriere sur le builder, avec le
+`lang/crystal` de la branche trimestrielle des ports (`2026Q4` : 1.21.0). Une
+nouvelle version de Crystal n'y arrive qu'au trimestre suivant celui où elle
+entre dans les ports.
+
+Basculer le poste dès la sortie d'une version casse d'un coup les projets
+incompatibles (octobre 2026 : Crystal 1.22 redéfinit des constantes OpenSSL
+que le shard `jose` déclarait aussi), et le poste ne compile plus comme la
+production. `crystal-before-upgrade` sépare les deux gestes : *détecter tôt*, en
+essayant la nouvelle version sur tous les projets, et *basculer le poste*
+seulement quand le builder bascule.
+
+== Ce que fait l'outil
+
+Pour chaque projet trouvé (un dossier qui contient un `shard.yml`, sous
+`~/prod-crystal` et `~/prod-partiduo` par défaut, jusqu'à trois niveaux, sans
+descendre dans un projet ni dans `lib/`) :
+
+. vérifie le *typage complet* (`crystal build --no-codegen`) de chaque cible
+  du `shard.yml`, puis de toutes ses specs (`spec/**/*_spec.cr`) ;
+. le fait avec la version de *référence* puis avec la *nouvelle* version ;
+. affiche un tableau : régressions d'abord (ce qui passait avec la
+  référence et ne passe plus), puis les échecs déjà présents, puis le reste,
+  avec la première erreur utile de chaque échec.
+
+L'outil n'écrit *rien* dans les projets : ni `shards install`, ni binaire, ni
+verrou. Il ne lance pas les specs (il vérifie qu'elles compilent) : pas
+besoin de PostgreSQL. Un projet dont les dépendances ne sont pas installées
+(`lib/` absent) est marqué « impossible », jamais en régression.
+
+Les compilateurs sont pris directement dans les installations d'asdf
+(`~/.asdf/installs/crystal/<version>/bin/crystal`) : la version globale ou
+celle d'un `.tool-versions` n'entre pas en jeu.
+
+== Installation
+
+[source,sh]
+----
+cd ~/prod-crystal/crystal-before-upgrade
+shards build --no-debug
+ln -sfn ~/prod-crystal/crystal-before-upgrade/bin/crystal-before-upgrade ~/bin/crystal-before-upgrade
+----
+
+Le binaire reste dans `bin/` du projet ; `~/bin/crystal-before-upgrade` n'est qu'un
+lien (le reconstruire ne l'écrase pas).
+
+== Utilisation
+
+À chaque nouvelle version de Crystal :
+
+[source,sh]
+----
+asdf install crystal 1.23.0
+crystal-before-upgrade 1.23.0 --reference=1.22.0
+----
+
+`asdf install` installe la version *à côté* des autres, sans la rendre
+active. Le code de sortie vaut 0 sans régression, 1 s'il y en a, 2 en cas
+d'erreur d'utilisation (version non installée…).
+
+[cols="2,5",options="header"]
+|===
+|Option |Effet
+
+|`--reference=VERSION`
+|Version de comparaison (défaut : `$CRYSTAL_BEFORE_UPGRADE_REFERENCE`, sinon aucune)
+
+|`--sans-reference`
+|Vérifier seulement avec la nouvelle version
+
+|`-r DIR`, `--racine=DIR`
+|Dossier où chercher les projets (répétable)
+
+|`-f MOTIF`, `--filtre=MOTIF`
+|Seulement les projets dont le chemin contient `MOTIF`
+
+|`-j N`, `--travaux=N`
+|Projets vérifiés en même temps (défaut : 2 ; c'est la mémoire qui limite :
+une application Partiduo complète prend plusieurs Go)
+
+|`--asdf=DIR`
+|Dossier d'asdf (défaut : `$ASDF_DATA_DIR` ou `~/.asdf`)
+|===
+
+Exemples :
+
+[source,sh]
+----
+crystal-before-upgrade 1.22.0 --reference=1.21.1 -f partiduo-admin
+crystal-before-upgrade 1.22.0 --reference=1.21.1 -r ~/prod-crystal -j 4
+----
+
+== Procédure pour une nouvelle version de Crystal
+
+. *Installer à côté* : `asdf install crystal X.Y.Z`. Ne pas toucher à
+  `~/.tool-versions`.
+. *Essayer* : `crystal-before-upgrade X.Y.Z --reference=<version du builder>`.
+. *Corriger* chaque régression en gardant le code compatible avec les deux
+  versions (exemple : `jose` 0.2.1 ne déclare plus ses constantes GCM que si
+  Crystal ne les fournit pas), publier les shards corrigés, relancer
+  l'essai jusqu'à zéro régression.
+. *Basculer le poste* quand le builder bascule, c'est-à-dire quand la branche
+  trimestrielle des ports FreeBSD (`lang/crystal`) passe à X.Y.Z : voir
+  ci-dessous. Vérifier la version du port :
+  `curl -s https://raw.githubusercontent.com/freebsd/freebsd-ports/2027Q1/lang/crystal/Makefile | grep DISTVERSION`.
+
+== Changer la version de Crystal du poste
+
+La version vient du fichier `.tool-versions` le plus proche du dossier
+courant, en remontant jusqu'au dossier personnel. Sur ce poste :
+
+* `~/.tool-versions` : version de tout ce qui n'a pas son propre fichier
+  (dont `~/prod-partiduo`) ;
+* `~/prod-crystal/.tool-versions` : version de tous les projets de
+  `~/prod-crystal` ;
+* `~/prod-crystal/marten-docs-fr/.tool-versions` : Node.js seulement, sans
+  effet sur Crystal ;
+* `~/prod-crystal/crystal-before-upgrade/.tool-versions` : 1.21.1 (version du
+  builder au moment de l'écriture).
+
+=== Revenir à 1.21.1 (version du builder jusqu'en janvier 2027)
+
+[source,sh]
+----
+asdf set -u crystal 1.21.1 && cd ~/prod-crystal && asdf set crystal 1.21.1 && cd - && crystal --version
+----
+
+`asdf set -u` écrit `~/.tool-versions` ; `asdf set` sans option écrit le
+`.tool-versions` du dossier courant, ici `~/prod-crystal`. `crystal
+--version` doit afficher 1.21.1. La 1.22.0 reste installée (`asdf list
+crystal`), prête pour `crystal-before-upgrade 1.22.0 --reference=1.21.1`.
+
+Après un changement de version, le cache du compilateur se reconstruit seul
+(`~/.cache/crystal`) ; les binaires déjà compilés (`bin/` des projets)
+restent utilisables, mais il vaut mieux les reconstruire avant de les
+livrer.
+
+=== Passer à la nouvelle version (quand le builder l'a)
+
+[source,sh]
+----
+asdf set -u crystal X.Y.Z && cd ~/prod-crystal && asdf set crystal X.Y.Z && cd - && crystal --version
+----
+
+== Développement
+
+[source,sh]
+----
+crystal spec
+crystal tool format src spec
+----
+
+Le numéro de version est dans `shard.yml` seulement (lu par
+`CrystalBeforeUpgrade::VERSION`) ; chaque commit en relève le dernier chiffre.

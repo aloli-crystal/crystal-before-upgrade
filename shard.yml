@@ -1,0 +1,17 @@
+name: crystal-before-upgrade
+version: 0.1.0
+
+description: |
+  Essai d'une nouvelle version de Crystal sur tous les projets du poste,
+  sans changer la version utilisée au quotidien.
+
+authors:
+  - Philippe Nénert <it+claude.ai@aloli.fr>
+
+targets:
+  crystal-before-upgrade:
+    main: src/main.cr
+
+crystal: ">= 1.21.0"
+
+license: AGPL-3.0-or-later
